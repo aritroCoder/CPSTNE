@@ -18,7 +18,7 @@ import learn2learn as l2l
 torch.manual_seed(0)
 np.random.seed(0)
 
-batch_size = 32
+batch_size = 64
 num_shot = 50  # Example values, can be adjusted
 num_val = 50
 input_dim = 2  # For example, (x1, x2) as inputs would require 2 dim
@@ -29,7 +29,7 @@ learning_rate = 2e-5
 num_epochs = 5
 l1_lambda = 0.5
 l2_lambda = 0.05
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 # %%
 class BasisFunctionLearner(nn.Module):
@@ -126,7 +126,7 @@ class MnistDataset(Dataset):
         self.dim_output = 1
 
         # Load data from the pickle file
-        with open('mnist_data/mnist.pkl', 'rb') as f:
+        with open('datasets/mnist.pkl', 'rb') as f:
             data = pickle.load(f)
             print(data['meta_train_x'].shape, data['meta_train_y'].shape, data['meta_test_x'].shape, data['meta_test_y'].shape)
 
@@ -196,6 +196,7 @@ opt = optim.Adam(maml.parameters(), lr=learning_rate)
 # # training model
 
 # %%
+train_losses = []
 for idx, (context_x, context_y, target_x, target_y) in enumerate(train_loader):
     meta_train_loss = 0.0
     context_x, context_y, target_x, target_y = context_x.to(device), context_y.to(device), target_x.to(device), target_y.to(device)
@@ -215,6 +216,7 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(train_loader):
         meta_train_loss += loss
 
     meta_train_loss /= effective_batch_size
+    train_losses.append(meta_train_loss.detach().cpu().item())
     if idx % 10 == 0:
         print(f"Iteration: {idx+1}, Meta train loss: {meta_train_loss}")
 
@@ -228,6 +230,13 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(train_loader):
 # %%
 # Save model weights
 torch.save(model.state_dict(), 'mnist_model_weights.pth')
+
+# Save the training loss
+plt.plot(train_losses)
+plt.xlabel('Iteration')
+plt.ylabel('Training Loss')
+plt.title('Training Loss')
+plt.savefig('training_loss.png')
 
 # %% [markdown]
 # # tESTING MODEL
@@ -254,7 +263,7 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(test_loader):
         meta_test_loss += loss
 
     meta_test_loss /= effective_batch_size
-    losses.append(meta_test_loss)
+    losses.append(meta_test_loss.detach().cpu().item())
     if idx % 10 == 0:
         print(f"Iteration: {idx+1}, Meta test loss: {meta_test_loss}")
     
@@ -265,9 +274,9 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(test_loader):
 # %%
 # save the plot of losses
 plt.plot(losses)
-plt.xlabel('Iteration')
+plt.xlabel('Tasks')
 plt.ylabel('Meta Test Loss')
-plt.title('Meta Test Loss vs Iteration')
+plt.title('Meta Test Loss vs Tasks')
 plt.savefig('meta_test_loss.png')
 
 # %%
