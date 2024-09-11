@@ -18,7 +18,7 @@ import learn2learn as l2l
 torch.manual_seed(0)
 np.random.seed(0)
 
-batch_size = 128
+batch_size = 32
 num_shot = 50  # Example values, can be adjusted
 num_val = 50
 input_dim = 2  # For example, (x1, x2) as inputs would require 2 dim
@@ -192,6 +192,9 @@ model = FewShotRegressionModel(input_dim, hidden_dim, basis_function_dim, output
 maml = l2l.algorithms.MAML(model, lr=learning_rate, first_order=False, allow_unused=True)
 opt = optim.Adam(maml.parameters(), lr=learning_rate)
 
+# %% [markdown]
+# # training model
+
 # %%
 for idx, (context_x, context_y, target_x, target_y) in enumerate(train_loader):
     meta_train_loss = 0.0
@@ -214,9 +217,60 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(train_loader):
     meta_train_loss /= effective_batch_size
     if idx % 10 == 0:
         print(f"Iteration: {idx+1}, Meta train loss: {meta_train_loss}")
+
     if idx % 50 == 0:
-        torch.save(model.state_dict(), f'mnist_model_weights_{idx}.pth')
+        torch.save(model.state_dict(), 'mnist_model_weights.pth')
     
     opt.zero_grad()
     meta_train_loss.backward()
     opt.step()
+
+# %%
+# Save model weights
+torch.save(model.state_dict(), 'mnist_model_weights.pth')
+
+# %% [markdown]
+# # tESTING MODEL
+
+# %%
+model.load_state_dict(torch.load('mnist_model_weights_450.pth', weights_only=True))
+losses = []
+for idx, (context_x, context_y, target_x, target_y) in enumerate(test_loader):
+    meta_test_loss = 0.0
+    context_x, context_y, target_x, target_y = context_x.to(device), context_y.to(device), target_x.to(device), target_y.to(device)
+    effective_batch_size = context_x.size(0)
+    for i in range(effective_batch_size):
+        learner = maml.clone(first_order=True)
+        x_support, y_support = context_x[i], context_y[i]
+        x_query, y_query = target_x[i], target_y[i]
+        y_support = y_support.view(-1)
+        y_query = y_query.view(-1)
+        for _ in range(num_epochs):
+            wts, predictions = learner(x_support)
+            loss = custom_loss_function(predictions, y_support, wts)
+            learner.adapt(loss)
+        wts, predictions = learner(x_query)
+        loss = custom_loss_function(predictions, y_query, wts)
+        meta_test_loss += loss
+
+    meta_test_loss /= effective_batch_size
+    losses.append(meta_test_loss)
+    if idx % 10 == 0:
+        print(f"Iteration: {idx+1}, Meta test loss: {meta_test_loss}")
+    
+    # opt.zero_grad()
+    # meta_test_loss.backward()
+    # opt.step()
+
+# %%
+# save the plot of losses
+plt.plot(losses)
+plt.xlabel('Iteration')
+plt.ylabel('Meta Test Loss')
+plt.title('Meta Test Loss vs Iteration')
+plt.savefig('meta_test_loss.png')
+
+# %%
+
+
+
