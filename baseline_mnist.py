@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,109 +7,86 @@ import pandas as pd
 import pickle
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
-from tqdm import tqdm
+from tqdm import tqdm, trange
+from sklearn.preprocessing import StandardScaler
 from torch.optim.lr_scheduler import LambdaLR
 
-batch_size = 256
+# set the random seed for reproducibility
+torch.manual_seed(0)
+np.random.seed(0)
+
+batch_size = 64
+num_shot = 50  # Example values, can be adjusted
+num_val = 50
 input_dim = 1  # For example, (x1, x2) as inputs would require 2 dim
-hidden_dim = 512
-basis_function_dim = 256
+hidden_dim = 64
+basis_function_dim = 32
 output_dim = 1  # For example, z as output
-learning_rate = 2e-4
-num_epochs = 60000
+learning_rate = 2e-5
+num_epochs = 500
 l1_lambda = 0.5
 l2_lambda = 0.05
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
-class FOMDataset(Dataset):
-    def __init__(self, csv_file):
-        # Load the CSV file
-        self.data = pd.read_csv(csv_file)
-
-        # Extract features (thickness, wavelength) and target (fom)
-        self.X = self.data[['thickness', 'wavelength']].values
-        self.y = self.data['fom'].values
-
-    def __len__(self):
-        # Return the total number of samples
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        # Get the input features and target for a given index
-        x = torch.tensor(self.X[idx], dtype=torch.float32)
-        y = torch.tensor(self.y[idx], dtype=torch.float32).unsqueeze(0)
-        return x, y
-
-class SinusoidGenerator(Dataset):
-    def __init__(self, train=True, few_k_shot=20):
-        self.few_k_shot = few_k_shot
-        data_file = (
-            "sinusoidal_data/sinusoid_data/sinusoidal_train.pkl"
-            if train
-            else "sinusoidal_data/sinusoid_data/sinusoidal_test.pkl"
-        )
-
-        with open(data_file, "rb") as f:
-            data = pickle.load(f)
-
-        self.data = {
-            "train_x": torch.tensor(data["x"][:, : self.few_k_shot, :]),
-            "train_y": torch.tensor(data["y"][:, : self.few_k_shot, :]),
-            "test_x": torch.tensor(data["x"][:, 20:, :]),
-            "test_y": torch.tensor(data["y"][:, 20:, :]),
-        }
-
-        print(
-            "load data: train_x",
-            self.data["train_x"].shape,
-            "val_x",
-            self.data["test_x"].shape,
-            "train_y",
-            self.data["train_y"].shape,
-            "val_y",
-            self.data["test_y"].shape,
-        )
-
-        self.train = train
-        self.dim_input = 1
+class MnistDataset(Dataset):
+    def __init__(self, num_shot, num_val, train=True, bmaml=False):
+        self.num_shot = num_shot
+        self.bmaml = bmaml
+        self.dim_input = 2
         self.dim_output = 1
 
-    def generate_batch(self, indx):
-        context_x = self.data["train_x"][indx]
-        context_y = self.data["train_y"][indx]
-        target_x = self.data["test_x"][indx]
-        target_y = self.data["test_y"][indx]
+        # Load data from the pickle file
+        with open('mnist.pkl', 'rb') as f:
+            data = pickle.load(f)
 
-        if self.train:
-            return context_x, context_y, target_x, target_y
+        # Select train or test data
+        if train:
+            data_str = 'train'
         else:
-            return torch.cat((context_x, target_x)), torch.cat((context_y, target_y))
-    
+            data_str = 'test'
+            
+        # Create dataset with train_x, train_y, test_x, test_y
+        self.train_x = data['meta_' + data_str + '_x'][:, :num_shot, :]
+        self.train_y = data['meta_' + data_str + '_y'][:, :num_shot, :]
+        self.test_x = data['meta_' + data_str + '_x'][:, num_shot:num_shot+num_val, :]
+        self.test_y = data['meta_' + data_str + '_y'][:, num_shot:num_shot+num_val, :]
+
+        print('Data loaded: train_x', self.train_x.shape, 'test_x', self.test_x.shape, 
+              'train_y', self.train_y.shape, 'test_y', self.test_y.shape)
+
     def __len__(self):
-        if self.train:
-            return self.data["train_x"].shape[0]
-        else:
-            return self.data["test_x"].shape[0]
-    
-    def __getitem__(self, idx):
-        return self.generate_batch(idx)
+        # Return the number of examples
+        return self.train_x.shape[0]
 
-sine_dataset_train = SinusoidGenerator(train=True, few_k_shot=20)
-sine_dataset_test = SinusoidGenerator(train=False)
+    def __getitem__(self, indx):
+        # Fetch context and target data based on index
+        context_x = torch.tensor(self.train_x[indx], dtype=torch.float32)
+        context_y = torch.tensor(self.train_y[indx], dtype=torch.float32)
+        target_x = torch.tensor(self.test_x[indx], dtype=torch.float32)
+        target_y = torch.tensor(self.test_y[indx], dtype=torch.float32)
 
-sine_dataloader_train = DataLoader(
-    sine_dataset_train, batch_size=batch_size, shuffle=True, num_workers=16
-)
-sine_dataloader_test = DataLoader(
-    sine_dataset_test, batch_size=batch_size, shuffle=False, num_workers=16
-)
+        if self.bmaml:
+            # If bmaml is True, concatenate context and target data for leader_x and leader_y
+            leader_x = torch.cat([context_x, target_x], dim=0)
+            leader_y = torch.cat([context_y, target_y], dim=0)
+            return context_x, context_y, leader_x, leader_y, target_x, target_y
 
-for t in sine_dataloader_train:
-  print(f"Train x, train y, val x, val y: {t[0].shape, t[1].shape, t[2].shape, t[3].shape}")
+        return context_x, context_y, target_x, target_y
+
+def create_dataloader(num_shot, num_val, batch_size, train=True, bmaml=False):
+    dataset = MnistDataset(num_shot=num_shot, num_val=num_val, train=train, bmaml=bmaml)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+# Create dataloaders
+train_loader = create_dataloader(num_shot, num_val, batch_size, train=True)
+test_loader = create_dataloader(num_shot, 784-num_val, batch_size, train=False)
+
+for t in train_loader:
+  print(f"Context x, context y, target x, target y: {t[0].shape, t[1].shape, t[2].shape, t[3].shape}")
   break
 
-for t in sine_dataloader_test:
-  print(f"Test x, test y: {t[0].shape, t[1].shape}")
+for t in test_loader:
+  print(f"Context x, context y, target x, target y: {t[0].shape, t[1].shape, t[2].shape, t[3].shape}")
   break
 
 class BasisFunctionLearner(nn.Module):
@@ -218,23 +196,20 @@ print(f"Number of trainable parameters: {num_trainable_params}")
 
 model = FewShotRegressionModel(input_dim, hidden_dim, basis_function_dim, output_dim).to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-total_steps = len(sine_dataloader_train) * num_epochs
+total_steps = len(train_loader) * num_epochs
 warmup_steps = total_steps // 10
 scheduler = LambdaLR(optimizer, lr_lambda)
 
 torch.autograd.set_detect_anomaly(True)
 losses = []
-for epoch in range(num_epochs):
+test_losses = []
+for epoch in trange(num_epochs):
     model.train()
 
-    for batch_x_train, batch_y_train, batch_x_val, batch_y_val in tqdm(
-        sine_dataloader_train
-    ):
+    for batch_x_train, batch_y_train, _, _ in train_loader:
         # move to device
-        batch_x_train = batch_x_train.to(device, torch.float32).view(-1, 1)
+        batch_x_train = batch_x_train.to(device, torch.float32).view(-1, input_dim)
         batch_y_train = batch_y_train.to(device, torch.float32).view(-1)
-        batch_x_val = batch_x_val.to(device, torch.float32).view(-1, 1)
-        batch_y_val = batch_y_val.to(device, torch.float32).view(-1)
         
         batch_size = batch_x_train.shape[0]
 
@@ -251,24 +226,40 @@ for epoch in range(num_epochs):
 
     # Print loss every 10 epochs
     if (epoch+1) % 10 == 0:
-        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
         losses.append(loss.item())
+        temp_test_losses = []
+        for batch_x_test, batch_y_test in test_loader:
+            batch_x_test = batch_x_test.to(device, torch.float32).view(-1, input_dim)
+            batch_y_test = batch_y_test.to(device, torch.float32).view(-1)
 
-    if (epoch+1) % 100 == 0:
-        # plot the losses in a graph and save as a image
-        plt.plot(losses)
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.title('Training Loss')
-        plt.savefig(f'baseline_{epoch+1}.png')
+            wts, predictions = model(batch_x_test)
+            loss = custom_loss_function(predictions, batch_y_test, wts, l1_lambda, l2_lambda)
+            temp_test_losses.append(loss.item())
+        test_losses.append(sum(temp_test_losses)/len(temp_test_losses))
+        print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {losses[-1]:.4f}, Test Loss: {test_losses[-1]:.4f}')
 
-        model.eval()
-        with torch.no_grad():
-            for batch_x_test, batch_y_test in sine_dataloader_test:
-                batch_x_test = batch_x_test.to(device, torch.float32).view(-1, 1)
-                batch_y_test = batch_y_test.to(device, torch.float32).view(-1)
+# plot the losses in a graph and save as a image
+plt.plot(losses)
+plt.plot(test_losses)
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.title('Training Loss')
+plt.legend(['Train Loss', 'Test Loss'])
+plt.savefig(f'baseline_fom_{epoch+1}.png')
 
-                wts, predictions = model(batch_x_test)
-                loss = custom_loss_function(predictions, batch_y_test, wts)
-                print(f'Validation Loss: {loss.item():.4f}')
-        torch.save(model.state_dict(), f'baseline_{epoch+1}.pth')
+model.eval()
+with torch.no_grad():
+    test_losses = []
+    for batch_x_test, batch_y_test in fom_dataloader_test:
+        batch_x_test = batch_x_test.to(device, torch.float32).view(-1, input_dim)
+        batch_y_test = batch_y_test.to(device, torch.float32).view(-1)
+
+        wts, predictions = model(batch_x_test)
+        loss = custom_loss_function(predictions, batch_y_test, wts, l1_lambda, l2_lambda)
+        test_losses.append(loss.item())
+    print(f'Test Loss: {sum(test_losses)/len(test_losses):.4f}')
+
+    # print few test input, predicted output and actual output after inverse scaling
+    for i in range(5):
+        # print(f"Test Input: {batch_x_test[i].cpu().numpy()}, Predicted Output: {predictions[i].cpu().numpy()}, Actual Output: {batch_y_test[i].cpu().numpy()}")
+        print(f"Predicted Output (inverse scaled): {fom_dataset_test.scale_inverse(predictions.reshape(-1, 1).cpu().numpy())[i]}, Actual Output (inverse scaled): {fom_dataset_test.scale_inverse(batch_y_test.reshape(-1, 1).cpu().numpy())[i]}")
