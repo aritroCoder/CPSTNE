@@ -25,9 +25,9 @@ output_dim = 1  # For example, z as output
 learning_rate = 2e-5
 num_adapt_epochs = 5
 num_train_epochs = 1000
-few_shot_k = 4
-l1_lambda = 0.5
-l2_lambda = 0.05
+few_shot_k = 5
+l1_lambda = 0.6
+l2_lambda = 0.09
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 class FOMDataset(Dataset):
