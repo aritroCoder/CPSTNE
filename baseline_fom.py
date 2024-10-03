@@ -17,6 +17,7 @@ import learn2learn as l2l
 torch.manual_seed(0)
 np.random.seed(0)
 
+train = False # Set to True if you want to train the model
 batch_size = 64
 input_dim = 2  # For example, (x1, x2) as inputs would require 2 dim
 hidden_dim = 64
@@ -215,51 +216,54 @@ torch.autograd.set_detect_anomaly(True)
 losses = []
 val_losses = []
 
-for epoch in range(num_train_epochs):
-    for idx, (context_x, context_y, target_x, target_y) in enumerate(fom_dataloader_train):
-        meta_train_loss = 0
-        learn_loss = 0
-        context_x, context_y, target_x, target_y = context_x.to(device), context_y.to(device), target_x.to(device), target_y.to(device)
-        effective_batch_size = context_x.size(0)
-        for i in range(effective_batch_size):
-            learner = maml.clone(first_order=True)
-            x_support, y_support = context_x[i], context_y[i]
-            x_query, y_query = target_x[i], target_y[i]
+if train:
+    for epoch in range(num_train_epochs):
+        for idx, (context_x, context_y, target_x, target_y) in enumerate(fom_dataloader_train):
+            meta_train_loss = 0
             learn_loss = 0
-            for _ in range(num_adapt_epochs):
-                wts, predictions = learner(x_support)
-                loss = custom_loss_function(predictions, y_support, wts, l1_lambda, l2_lambda)
-                learn_loss += loss.detach().cpu().item()
-                learner.adapt(loss)
-            wts, predictions = learner(x_query)
-            loss = custom_loss_function(predictions, y_query, wts, l1_lambda, l2_lambda)
-            meta_train_loss += loss
+            context_x, context_y, target_x, target_y = context_x.to(device), context_y.to(device), target_x.to(device), target_y.to(device)
+            effective_batch_size = context_x.size(0)
+            for i in range(effective_batch_size):
+                learner = maml.clone(first_order=True)
+                x_support, y_support = context_x[i], context_y[i]
+                x_query, y_query = target_x[i], target_y[i]
+                learn_loss = 0
+                for _ in range(num_adapt_epochs):
+                    wts, predictions = learner(x_support)
+                    loss = custom_loss_function(predictions, y_support, wts, l1_lambda, l2_lambda)
+                    learn_loss += loss.detach().cpu().item()
+                    learner.adapt(loss)
+                wts, predictions = learner(x_query)
+                loss = custom_loss_function(predictions, y_query, wts, l1_lambda, l2_lambda)
+                meta_train_loss += loss
 
-        meta_train_loss /= effective_batch_size
-        learn_loss /= num_adapt_epochs*effective_batch_size
-        losses.append(learn_loss)
-        val_losses.append(meta_train_loss.item())
+            meta_train_loss /= effective_batch_size
+            learn_loss /= num_adapt_epochs*effective_batch_size
+            losses.append(learn_loss)
+            val_losses.append(meta_train_loss.item())
 
-        meta_train_loss.backward()
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
-        
-    if epoch % 10 == 0:
-        print(f"Epoch: {epoch}, Meta Train Loss: {sum(losses)/len(losses):.4f}, Val Loss: {sum(val_losses)/len(val_losses):.4f}")
+            meta_train_loss.backward()
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+            
+        if epoch % 10 == 0:
+            print(f"Epoch: {epoch}, Meta Train Loss: {sum(losses)/len(losses):.4f}, Val Loss: {sum(val_losses)/len(val_losses):.4f}")
 
-    if epoch % 50 == 0:
-        torch.save(model.state_dict(), f'baseline_fom_wts.pt')
+        if epoch % 50 == 0:
+            torch.save(model.state_dict(), f'baseline_fom_wts.pt')
 
-# plot the losses in a graph and save as a image
-plt.plot(losses)
-plt.plot(val_losses)
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.title('Training Loss')
-plt.legend(['Train Loss', 'Test Loss'])
-plt.savefig(f'baseline_fom.png')
+    # plot the losses in a graph and save as a image
+    plt.plot(losses)
+    plt.plot(val_losses)
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend(['Train Loss', 'Test Loss'])
+    plt.savefig(f'baseline_fom.png')
 
+else:
+    model.load_state_dict(torch.load('baseline_fom_wts.pt'))
 
 test_losses = []
 for idx, (context_x, context_y, target_x, target_y) in enumerate(fom_dataloader_test):

@@ -22,7 +22,7 @@ input_dim = 2  # For example, (x1, x2) as inputs would require 2 dim
 hidden_dim = 64
 basis_function_dim = 32
 output_dim = 1  # For example, z as output
-learning_rate = 2e-5
+learning_rate = 1e-7
 num_adapt_epochs = 5
 num_train_epochs = 1000
 few_shot_k = 5
@@ -176,16 +176,11 @@ class FewShotRegressionModel(nn.Module):
         # Step 2: Generate weights w
         weights = self.weights_generator(basis_functions)
 
-        # Step 3: Compute final prediction z = Φ(x) * w
-        return weights, torch.diag(torch.matmul(basis_functions, weights.T))
+        final_pred = torch.diag(torch.matmul(basis_functions, weights.T))
+        # print(f"Basis Functions: {basis_functions}, Weights: {weights}, Final Prediction: {final_pred}")
 
-## NOTE: loss seems to explode when unnormalized data is used
-def custom_loss_function(predictions, targets, weights, l1_lambda=0.001, l2_lambda=0.0001):
-    mse_loss = nn.MSELoss()(predictions, targets)
-    l1_loss = l1_lambda * torch.norm(weights, p=1)
-    # l2_loss = l2_lambda * torch.norm(weights, p=2)
-    # return mse_loss + l1_loss + l2_loss
-    return mse_loss + l1_loss
+        # Step 3: Compute final prediction z = Φ(x) * w
+        return weights, final_pred
 
 model = FewShotRegressionModel(
     input_dim, hidden_dim, basis_function_dim, output_dim
@@ -195,7 +190,8 @@ num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_g
 print(f"Number of trainable parameters: {num_trainable_params}")
 
 maml = l2l.algorithms.MAML(model, lr=learning_rate, first_order=False, allow_unused=True)
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+criterion = nn.MSELoss()
 total_steps = len(fom_dataloader_train) * num_train_epochs
 warmup_steps = total_steps // 10
 
@@ -224,14 +220,16 @@ for epoch in range(num_train_epochs):
             learn_loss = 0
             for _ in range(num_adapt_epochs):
                 wts, predictions = learner(x_support)
-                loss = custom_loss_function(predictions, y_support, wts, l1_lambda, l2_lambda)
+                loss = criterion(predictions, y_support)
                 learn_loss += loss.detach().cpu().item()
                 learner.adapt(loss)
             wts, predictions = learner(x_query)
-            loss = custom_loss_function(predictions, y_query, wts, l1_lambda, l2_lambda)
+            loss = criterion(predictions, y_query)
             meta_train_loss += loss
+            print(meta_train_loss)
 
         meta_train_loss /= effective_batch_size
+        print("average meta train loss: ", meta_train_loss)
         learn_loss /= num_adapt_epochs*effective_batch_size
         losses.append(learn_loss)
         val_losses.append(meta_train_loss.item())
@@ -267,12 +265,15 @@ for idx, (context_x, context_y, target_x, target_y) in enumerate(fom_dataloader_
         learner = maml.clone(first_order = True)
         x_support, y_support = context_x[i], context_y[i]
         x_query, y_query = target_x[i], target_y[i]
+        print(f"Support X: {x_support.shape}, Support Y: {y_support.shape}")
         for i in range(num_adapt_epochs):
             wts, predictions = learner(x_support)
-            loss = custom_loss_function(predictions, y_support, wts, l1_lambda, l2_lambda)
+            print(predictions, y_support)
+            loss = criterion(predictions, y_support)
+            print(loss)
             learner.adapt(loss)
         wts, predictions = learner(x_query)
-        loss = custom_loss_function(predictions, y_query, wts, l1_lambda, l2_lambda)
+        loss = criterion(predictions, y_query)
         # print few test input, predicted output and actual output
         for i in range(2):
             print(f"Input: {target_x[i]} Predicted Output: {fom_dataset_test.scale_inverse(predictions.reshape(-1, 1).detach().cpu().numpy())[i]}, Actual Output: {fom_dataset_test.scale_inverse(target_y.reshape(-1, 1).detach().cpu().numpy())[i]}")
