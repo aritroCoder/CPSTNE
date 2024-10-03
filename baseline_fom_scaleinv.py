@@ -214,10 +214,12 @@ scheduler = LambdaLR(optimizer, lr_lambda)
 torch.autograd.set_detect_anomaly(True)
 losses = []
 val_losses = []
+val_losses_scaled_inv = []
 
 for epoch in range(num_train_epochs):
     for idx, (context_x, context_y, target_x, target_y) in enumerate(fom_dataloader_train):
         meta_train_loss = 0
+        meta_train_loss_scaled_inv = 0
         learn_loss = 0
         context_x, context_y, target_x, target_y = context_x.to(device), context_y.to(device), target_x.to(device), target_y.to(device)
         effective_batch_size = context_x.size(0)
@@ -234,11 +236,21 @@ for epoch in range(num_train_epochs):
             wts, predictions = learner(x_query)
             loss = custom_loss_function(predictions, y_query, wts, l1_lambda, l2_lambda)
             meta_train_loss += loss
+            # set the scaled inverse loss as inverse scaled predictions minus inverse scaled target
+            pred_inv = fom_dataset_train.scale_inverse(predictions.reshape(-1, 1).detach().cpu())
+            target_inv = fom_dataset_train.scale_inverse(y_query.reshape(-1, 1).detach().cpu())
+            # print(pred_inv, target_inv)
+            pred_inv = torch.tensor(pred_inv, dtype=torch.float32).to('cpu')
+            target_inv = torch.tensor(target_inv, dtype=torch.float32).to('cpu')
+            mse_loss_fn = nn.MSELoss()
+            meta_train_loss_scaled_inv += mse_loss_fn(pred_inv, target_inv)
 
         meta_train_loss /= effective_batch_size
+        meta_train_loss_scaled_inv /= effective_batch_size
         learn_loss /= num_adapt_epochs*effective_batch_size
         losses.append(learn_loss)
         val_losses.append(meta_train_loss.item())
+        val_losses_scaled_inv.append(meta_train_loss_scaled_inv.item())
 
         meta_train_loss.backward()
         optimizer.step()
@@ -246,10 +258,10 @@ for epoch in range(num_train_epochs):
         optimizer.zero_grad()
         
     if epoch % 10 == 0:
-        print(f"Epoch: {epoch}, Meta Train Loss: {sum(losses)/len(losses):.4f}, Val Loss: {sum(val_losses)/len(val_losses):.4f}")
+        print(f"Epoch: {epoch}, Meta Train Loss: {sum(losses)/len(losses):.4f}, Val Loss (unnormalized): {sum(val_losses_scaled_inv)/len(val_losses_scaled_inv):.4f}, Val loss (normalized): {sum(val_losses)/len(val_losses):.4f}")
 
     if epoch % 50 == 0:
-        torch.save(model.state_dict(), f'baseline_fom_wts.pt')
+        torch.save(model.state_dict(), f'baseline_fom_wts_scaleinv.pt')
 
 # plot the losses in a graph and save as a image
 plt.plot(losses)
@@ -258,7 +270,7 @@ plt.xlabel('Epochs')
 plt.ylabel('Loss')
 plt.title('Training Loss')
 plt.legend(['Train Loss', 'Test Loss'])
-plt.savefig(f'baseline_fom.png')
+plt.savefig(f'baseline_fom_scaleinv.png')
 
 
 test_losses = []

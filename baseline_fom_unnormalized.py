@@ -37,14 +37,8 @@ class FOMDataset(Dataset):
         self.few_k_shot = few_k_shot
 
         # Extract features (thickness, wavelength) and target (fom)
-        X = self.data[['thickness', 'wavelength']].values
-        y = self.data['fom'].values
-
-        self.scaler_x = StandardScaler()
-        self.X = self.scaler_x.fit_transform(X)
-
-        self.scaler_y = StandardScaler()
-        self.y = self.scaler_y.fit_transform(y.reshape(-1, 1))
+        self.X = self.data[['thickness', 'wavelength']].values
+        self.y = self.data['fom'].values
 
         # divide X and y into sets of 9, each set representing a type of sensor
         self.X = self.X.reshape(-1, 9, 2)
@@ -185,11 +179,13 @@ class FewShotRegressionModel(nn.Module):
         # Step 3: Compute final prediction z = Φ(x) * w
         return weights, torch.diag(torch.matmul(basis_functions, weights.T))
 
+## NOTE: loss seems to explode when unnormalized data is used
 def custom_loss_function(predictions, targets, weights, l1_lambda=0.001, l2_lambda=0.0001):
     mse_loss = nn.MSELoss()(predictions, targets)
     l1_loss = l1_lambda * torch.norm(weights, p=1)
-    l2_loss = l2_lambda * torch.norm(weights, p=2)
-    return mse_loss + l1_loss + l2_loss
+    # l2_loss = l2_lambda * torch.norm(weights, p=2)
+    # return mse_loss + l1_loss + l2_loss
+    return mse_loss + l1_loss
 
 model = FewShotRegressionModel(
     input_dim, hidden_dim, basis_function_dim, output_dim
